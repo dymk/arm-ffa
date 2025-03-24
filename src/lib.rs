@@ -6,58 +6,28 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![doc = include_str!("../README.md")]
 
+pub use call_ffa::{call_ffa, CallFfa};
 use core::fmt::{self, Debug, Display, Formatter};
+use error::{Error, FfaError};
+use func_id::FuncId;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use thiserror::Error;
 use uuid::Uuid;
 
 pub mod boot_info;
+#[macro_use]
+pub mod console;
+mod call_ffa;
+pub mod error;
 mod ffa_v1_1;
 mod ffa_v1_2;
+pub mod func_id;
 pub mod memory_management;
 pub mod partition_info;
 
 /// Constant for 4K page size. On many occasions the FF-A spec defines memory size as count of 4K
 /// pages, regardless of the current translation granule.
 pub const FFA_PAGE_SIZE_4K: usize = 4096;
-
-/// Rich error types returned by this module. Should be converted to [`crate::FfaError`] when used
-/// with the `FFA_ERROR` interface.
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("Unrecognised FF-A function ID {0}")]
-    UnrecognisedFunctionId(u32),
-    #[error("Unrecognised FF-A feature ID {0}")]
-    UnrecognisedFeatureId(u8),
-    #[error("Unrecognised FF-A error code {0}")]
-    UnrecognisedErrorCode(i32),
-    #[error("Unrecognised FF-A Framework Message {0}")]
-    UnrecognisedFwkMsg(u32),
-    #[error("Unrecognised FF-A Msg Wait Flag {0}")]
-    UnrecognisedMsgWaitFlag(u32),
-    #[error("Unrecognised VM availability status {0}")]
-    UnrecognisedVmAvailabilityStatus(i32),
-    #[error("Unrecognised FF-A Warm Boot Type {0}")]
-    UnrecognisedWarmBootType(u32),
-    #[error("Invalid version {0}")]
-    InvalidVersion(u32),
-}
-
-impl From<Error> for FfaError {
-    fn from(value: Error) -> Self {
-        match value {
-            Error::UnrecognisedFunctionId(_) | Error::UnrecognisedFeatureId(_) => {
-                Self::NotSupported
-            }
-            Error::UnrecognisedErrorCode(_)
-            | Error::UnrecognisedFwkMsg(_)
-            | Error::InvalidVersion(_)
-            | Error::UnrecognisedMsgWaitFlag(_)
-            | Error::UnrecognisedVmAvailabilityStatus(_)
-            | Error::UnrecognisedWarmBootType(_) => Self::InvalidParameters,
-        }
-    }
-}
 
 /// An FF-A instance is a valid combination of two FF-A components at an exception level boundary.
 #[derive(PartialEq, Clone, Copy)]
@@ -66,99 +36,6 @@ pub enum Instance {
     SecurePhysical,
     /// The instance between the SPMC and a physical SP (contains the SP's endpoint ID).
     SecureVirtual(u16),
-}
-
-/// Function IDs of the various FF-A interfaces.
-#[derive(Clone, Copy, Debug, Eq, IntoPrimitive, PartialEq, TryFromPrimitive)]
-#[num_enum(error_type(name = Error, constructor = Error::UnrecognisedFunctionId))]
-#[repr(u32)]
-pub enum FuncId {
-    Error = 0x84000060,
-    Success32 = 0x84000061,
-    Success64 = 0xc4000061,
-    Interrupt = 0x84000062,
-    Version = 0x84000063,
-    Features = 0x84000064,
-    RxAcquire = 0x84000084,
-    RxRelease = 0x84000065,
-    RxTxMap32 = 0x84000066,
-    RxTxMap64 = 0xc4000066,
-    RxTxUnmap = 0x84000067,
-    PartitionInfoGet = 0x84000068,
-    PartitionInfoGetRegs = 0xc400008b,
-    IdGet = 0x84000069,
-    SpmIdGet = 0x84000085,
-    ConsoleLog32 = 0x8400008a,
-    ConsoleLog64 = 0xc400008a,
-    MsgWait = 0x8400006b,
-    Yield = 0x8400006c,
-    Run = 0x8400006d,
-    NormalWorldResume = 0x8400007c,
-    MsgSend2 = 0x84000086,
-    MsgSendDirectReq32 = 0x8400006f,
-    MsgSendDirectReq64 = 0xc400006f,
-    MsgSendDirectReq64_2 = 0xc400008d,
-    MsgSendDirectResp32 = 0x84000070,
-    MsgSendDirectResp64 = 0xc4000070,
-    MsgSendDirectResp64_2 = 0xc400008e,
-    NotificationBitmapCreate = 0x8400007d,
-    NotificationBitmapDestroy = 0x8400007e,
-    NotificationBind = 0x8400007f,
-    NotificationUnbind = 0x84000080,
-    NotificationSet = 0x84000081,
-    NotificationGet = 0x84000082,
-    NotificationInfoGet32 = 0x84000083,
-    NotificationInfoGet64 = 0xc4000083,
-    El3IntrHandle = 0x8400008c,
-    SecondaryEpRegister32 = 0x84000087,
-    SecondaryEpRegister64 = 0xc4000087,
-    MemDonate32 = 0x84000071,
-    MemDonate64 = 0xc4000071,
-    MemLend32 = 0x84000072,
-    MemLend64 = 0xc4000072,
-    MemShare32 = 0x84000073,
-    MemShare64 = 0xc4000073,
-    MemRetrieveReq32 = 0x84000074,
-    MemRetrieveReq64 = 0xc4000074,
-    MemRetrieveResp = 0x84000075,
-    MemRelinquish = 0x84000076,
-    MemReclaim = 0x84000077,
-    MemPermGet32 = 0x84000088,
-    MemPermGet64 = 0xc4000088,
-    MemPermSet32 = 0x84000089,
-    MemPermSet64 = 0xc4000089,
-}
-
-impl FuncId {
-    /// Returns true if this is a 32-bit call, or false if it is a 64-bit call.
-    pub fn is_32bit(&self) -> bool {
-        u32::from(*self) & (1 << 30) != 0
-    }
-}
-
-/// Error status codes used by the `FFA_ERROR` interface.
-#[derive(Clone, Copy, Debug, Eq, Error, IntoPrimitive, PartialEq, TryFromPrimitive)]
-#[num_enum(error_type(name = Error, constructor = Error::UnrecognisedErrorCode))]
-#[repr(i32)]
-pub enum FfaError {
-    #[error("Not supported")]
-    NotSupported = -1,
-    #[error("Invalid parameters")]
-    InvalidParameters = -2,
-    #[error("No memory")]
-    NoMemory = -3,
-    #[error("Busy")]
-    Busy = -4,
-    #[error("Interrupted")]
-    Interrupted = -5,
-    #[error("Denied")]
-    Denied = -6,
-    #[error("Retry")]
-    Retry = -7,
-    #[error("Aborted")]
-    Aborted = -8,
-    #[error("No data")]
-    NoData = -9,
 }
 
 /// Endpoint ID and vCPU ID pair, used by `FFA_ERROR`, `FFA_INTERRUPT` and `FFA_RUN` interfaces.
@@ -663,35 +540,6 @@ impl Interface {
     /// Parse interface from register contents. The caller must ensure that the `regs` argument has
     /// the correct length: 8 registers for FF-A v1.1 and lower, 18 registers for v1.2 and higher.
     pub fn from_regs(version: Version, regs: &[u64]) -> Result<Self, Error> {
-        let reg_cnt = regs.len();
-
-        let msg = match reg_cnt {
-            8 => {
-                assert!(version <= Version(1, 1));
-                Interface::unpack_regs8(version, regs.try_into().unwrap())?
-            }
-            18 => {
-                assert!(version >= Version(1, 2));
-                match FuncId::try_from(regs[0] as u32)? {
-                    FuncId::ConsoleLog64
-                    | FuncId::Success64
-                    | FuncId::MsgSendDirectReq64_2
-                    | FuncId::MsgSendDirectResp64_2 => {
-                        Interface::unpack_regs18(version, regs.try_into().unwrap())?
-                    }
-                    _ => Interface::unpack_regs8(version, regs[..8].try_into().unwrap())?,
-                }
-            }
-            _ => panic!(
-                "Invalid number of registers ({}) for FF-A version {}",
-                reg_cnt, version
-            ),
-        };
-
-        Ok(msg)
-    }
-
-    fn unpack_regs8(version: Version, regs: &[u64; 8]) -> Result<Self, Error> {
         let fid = FuncId::try_from(regs[0] as u32)?;
 
         let msg = match fid {
@@ -710,7 +558,7 @@ impl Interface {
                     regs[7] as u32,
                 ]),
             },
-            FuncId::Success64 => Self::Success {
+            FuncId::Success64 if version < Version(1, 2) => Self::Success {
                 target_info: regs[1] as u32,
                 args: SuccessArgs::Result64([regs[2], regs[3], regs[4], regs[5], regs[6], regs[7]]),
             },
@@ -1026,19 +874,7 @@ impl Interface {
                     regs[7] as u32,
                 ]),
             },
-            _ => panic!("Invalid number of registers (8) for function {:#x?}", fid),
-        };
-
-        Ok(msg)
-    }
-
-    fn unpack_regs18(version: Version, regs: &[u64; 18]) -> Result<Self, Error> {
-        assert!(version >= Version(1, 2));
-
-        let fid = FuncId::try_from(regs[0] as u32)?;
-
-        let msg = match fid {
-            FuncId::Success64 => Self::Success {
+            FuncId::Success64 if version >= Version(1, 2) => Self::Success {
                 target_info: regs[1] as u32,
                 args: SuccessArgs::Result64_2(regs[2..18].try_into().unwrap()),
             },
@@ -1057,47 +893,14 @@ impl Interface {
                 char_cnt: regs[1] as u8,
                 char_lists: ConsoleLogChars::Reg64(regs[2..18].try_into().unwrap()),
             },
-            _ => panic!("Invalid number of registers (18) for function {:#x?}", fid),
+            _ => unimplemented!("{:#010x}", fid as u32),
         };
 
         Ok(msg)
     }
 
     /// Create register contents for an interface.
-    pub fn to_regs(&self, version: Version, regs: &mut [u64]) {
-        let reg_cnt = regs.len();
-
-        match reg_cnt {
-            8 => {
-                assert!(version <= Version(1, 1));
-                self.pack_regs8(version, (&mut regs[..8]).try_into().unwrap());
-            }
-            18 => {
-                assert!(version >= Version(1, 2));
-
-                match self {
-                    Interface::ConsoleLog {
-                        char_lists: ConsoleLogChars::Reg64(_),
-                        ..
-                    }
-                    | Interface::Success {
-                        args: SuccessArgs::Result64_2(_),
-                        ..
-                    }
-                    | Interface::MsgSendDirectReq2 { .. }
-                    | Interface::MsgSendDirectResp2 { .. } => {
-                        self.pack_regs18(version, regs.try_into().unwrap());
-                    }
-                    _ => {
-                        self.pack_regs8(version, (&mut regs[..8]).try_into().unwrap());
-                    }
-                }
-            }
-            _ => panic!("Invalid number of registers {}", reg_cnt),
-        }
-    }
-
-    fn pack_regs8(&self, version: Version, a: &mut [u64; 8]) {
+    pub fn to_regs(&self, version: Version, a: &mut [u64]) {
         a.fill(0);
         if let Some(function_id) = self.function_id() {
             a[0] = function_id as u64;
@@ -1111,7 +914,7 @@ impl Interface {
                 a[1] = u32::from(target_info).into();
                 a[2] = (error_code as u32).into();
             }
-            Interface::Success { target_info, args } => {
+            Interface::Success { target_info, args } if version <= Version(1, 1) => {
                 a[1] = target_info.into();
                 match args {
                     SuccessArgs::Result32(regs) => {
@@ -1398,37 +1201,7 @@ impl Interface {
                 a[2] = page_cnt.into();
                 a[3] = mem_perm.into();
             }
-            Interface::ConsoleLog {
-                char_cnt,
-                char_lists,
-            } => {
-                a[1] = char_cnt.into();
-                match char_lists {
-                    ConsoleLogChars::Reg32(regs) => {
-                        a[2] = regs[0].into();
-                        a[3] = regs[1].into();
-                        a[4] = regs[2].into();
-                        a[5] = regs[3].into();
-                        a[6] = regs[4].into();
-                        a[7] = regs[5].into();
-                    }
-                    _ => panic!("{:#x?} requires 18 registers", char_lists),
-                }
-            }
-            _ => panic!("{:#x?} requires 18 registers", self),
-        }
-    }
-
-    fn pack_regs18(&self, version: Version, a: &mut [u64; 18]) {
-        assert!(version >= Version(1, 2));
-
-        a.fill(0);
-        if let Some(function_id) = self.function_id() {
-            a[0] = function_id as u64;
-        }
-
-        match *self {
-            Interface::Success { target_info, args } => {
+            Interface::Success { target_info, args } if version >= Version(1, 2) => {
                 a[1] = target_info.into();
                 match args {
                     SuccessArgs::Result64_2(regs) => a[2..18].copy_from_slice(&regs[..16]),
@@ -1461,11 +1234,18 @@ impl Interface {
             } => {
                 a[1] = char_cnt.into();
                 match char_lists {
+                    ConsoleLogChars::Reg32(regs) => {
+                        a[2] = regs[0].into();
+                        a[3] = regs[1].into();
+                        a[4] = regs[2].into();
+                        a[5] = regs[3].into();
+                        a[6] = regs[4].into();
+                        a[7] = regs[5].into();
+                    }
                     ConsoleLogChars::Reg64(regs) => a[2..18].copy_from_slice(&regs[..16]),
-                    _ => panic!("{:#x?} requires 8 registers", char_lists),
                 }
             }
-            _ => panic!("{:#x?} requires 8 registers", self),
+            _ => unimplemented!("{:#x?} unknown interface", self),
         }
     }
 
